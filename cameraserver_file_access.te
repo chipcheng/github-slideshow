@@ -1,0 +1,29 @@
+# SELinux 策略文件：允许 cameraserver 访问 /data/misc/cameraserver/ 目录下的文件
+# 使用方法：
+# 1. 将此文件复制到设备上
+# 2. 编译并加载策略：semodule -i cameraserver_file_access.pp
+
+# 定义 cameraserver 进程类型
+type cameraserver, domain;
+
+# 允许 cameraserver 读写 cameraserver_data_file 类型的文件
+allow cameraserver cameraserver_data_file:file { read write open getattr setattr };
+
+# 允许 cameraserver 搜索 cameraserver_data_file 类型的目录
+allow cameraserver cameraserver_data_file:dir { search read open getattr };
+
+# 允许 cameraserver 在 /data/misc/cameraserver/ 目录下创建文件
+allow cameraserver cameraserver_data_file:dir { write add_name create };
+
+# 允许 cameraserver 删除 cameraserver_data_file 类型的文件
+allow cameraserver cameraserver_data_file:file { unlink };
+
+# 允许 cameraserver 设置文件属性
+allow cameraserver cameraserver_data_file:file { setattr };
+
+# 允许 cameraserver 执行 chmod, chown, chcon 等操作
+allow cameraserver self:capability { dac_override fowner };
+allow cameraserver self:capability2 { mac_admin };
+
+# 允许 cameraserver 访问文件系统
+allow cameraserver filesystem:filesystem { getattr mount };

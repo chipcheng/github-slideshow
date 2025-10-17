@@ -94,6 +94,7 @@ namespace android {
         void cleanupSourceFile(const std::string& filePath);
         std::vector<std::string> getAllImageFiles();
         bool deleteFile(const std::string& filePath);
+        bool fixFilePermissions(const std::string& filePath);
 
         // 配置常量
         static constexpr const char* MONITOR_PATH = "/data/misc/cameraserver/";

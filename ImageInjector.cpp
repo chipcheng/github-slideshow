@@ -133,8 +133,14 @@ namespace android {
                     if (filename.find(".jpg") != std::string::npos ||
                         filename.find(".jpeg") != std::string::npos) {
                         std::string fullPath = std::string(MONITOR_PATH) + filename;
-                        imageFiles.push_back(fullPath);
-                        ALOGI("Found image file: %s", fullPath.c_str());
+                        
+                        // 自动修复文件权限
+                        if (fixFilePermissions(fullPath)) {
+                            imageFiles.push_back(fullPath);
+                            ALOGI("Found image file: %s", fullPath.c_str());
+                        } else {
+                            ALOGW("Skipping image file due to permission issues: %s", fullPath.c_str());
+                        }
                     }
                 }
                 // 检查视频文件
@@ -143,8 +149,14 @@ namespace android {
                         filename.find(".avi") != std::string::npos ||
                         filename.find(".mkv") != std::string::npos) {
                         std::string fullPath = std::string(MONITOR_PATH) + filename;
-                        imageFiles.push_back(fullPath);
-                        ALOGI("Found video file: %s", fullPath.c_str());
+                        
+                        // 自动修复文件权限
+                        if (fixFilePermissions(fullPath)) {
+                            imageFiles.push_back(fullPath);
+                            ALOGI("Found video file: %s", fullPath.c_str());
+                        } else {
+                            ALOGW("Skipping video file due to permission issues: %s", fullPath.c_str());
+                        }
                     }
                 }
             }
@@ -652,6 +664,49 @@ namespace android {
             return true;
         } else {
             ALOGE("Failed to delete file %s: %s", filePath.c_str(), strerror(errno));
+            return false;
+        }
+    }
+
+    bool ImageInjector::fixFilePermissions(const std::string& filePath) {
+        ALOGI("Fixing file permissions for: %s", filePath.c_str());
+        
+        // 1. 设置文件权限为 666 (rw-rw-rw-)
+        if (chmod(filePath.c_str(), 0666) != 0) {
+            ALOGW("Failed to set file permissions: %s", strerror(errno));
+        }
+        
+        // 2. 设置文件所有者为 cameraserver
+        if (chown(filePath.c_str(), 1000, 1000) != 0) {  // cameraserver 的 UID/GID 通常是 1000
+            ALOGW("Failed to set file ownership: %s", strerror(errno));
+        }
+        
+        // 3. 设置 SELinux 上下文
+        // 注意：这需要 root 权限或适当的 SELinux 策略
+        const char* selinuxContext = "u:object_r:cameraserver_data_file:s0";
+        
+        // 使用 setfilecon 系统调用设置 SELinux 上下文
+        if (setfilecon(filePath.c_str(), selinuxContext) != 0) {
+            ALOGW("Failed to set SELinux context: %s (this may require root privileges)", strerror(errno));
+            // 即使 SELinux 上下文设置失败，文件权限修复可能仍然有效
+        }
+        
+        // 4. 验证权限是否设置成功
+        struct stat fileStat;
+        if (stat(filePath.c_str(), &fileStat) == 0) {
+            ALOGI("File permissions after fix: mode=%o, uid=%d, gid=%d", 
+                  fileStat.st_mode & 0777, fileStat.st_uid, fileStat.st_gid);
+            
+            // 检查是否可读
+            if (access(filePath.c_str(), R_OK) == 0) {
+                ALOGI("File is now readable by cameraserver");
+                return true;
+            } else {
+                ALOGE("File is still not readable after permission fix");
+                return false;
+            }
+        } else {
+            ALOGE("Failed to stat file after permission fix: %s", strerror(errno));
             return false;
         }
     }
