@@ -29,9 +29,11 @@ namespace android {
               mNextFrameId(0),
               mCacheSize(0),
               mInjectionIndex(0),
+              mCurrentMemoryUsage(0),
               mTotalFramesProcessed(0),
               mCacheHits(0),
               mCacheMisses(0),
+              mMemoryErrors(0),
               mInjectionWidth(0),
               mInjectionHeight(0),
               mLastModTime(0) {
@@ -39,9 +41,11 @@ namespace android {
         // 初始化缓存
         mFrameCache.resize(MAX_CACHE_SIZE);
 
-        ALOGI("ImageInjector created with cache system");
+        ALOGI("ImageInjector created with enhanced safety features");
         ALOGI("Cache configuration: Size=%d, Max=%d, Expiry=%lldms",
               CACHE_SIZE, MAX_CACHE_SIZE, (long long)FRAME_EXPIRY_MS);
+        ALOGI("Memory limits: Max=%zuMB, Per-image=%zuMB, Max-dimension=%zu",
+              MAX_MEMORY_USAGE / (1024*1024), MAX_IMAGE_SIZE / (1024*1024), MAX_IMAGE_DIMENSION);
         ALOGI("Monitor path: %s", MONITOR_PATH);
     }
 
@@ -59,7 +63,7 @@ namespace android {
 
         mExitRequested = false;
         mMonitorThread = std::thread(&ImageInjector::monitorThreadLoop, this);
-        ALOGI("Image monitoring started with cache system");
+        ALOGI("Image monitoring started with enhanced safety");
     }
 
     void ImageInjector::stopMonitoring() {
@@ -77,6 +81,8 @@ namespace android {
         ALOGI("  Total Frames Processed: %lld", (long long)mTotalFramesProcessed.load());
         ALOGI("  Cache Hits: %lld", (long long)mCacheHits.load());
         ALOGI("  Cache Misses: %lld", (long long)mCacheMisses.load());
+        ALOGI("  Memory Errors: %lld", (long long)mMemoryErrors.load());
+        ALOGI("  Current Memory Usage: %zuMB", mCurrentMemoryUsage.load() / (1024*1024));
         if (mTotalFramesProcessed > 0) {
             float hitRate = (float)mCacheHits / mTotalFramesProcessed * 100.0f;
             ALOGI("  Cache Hit Rate: %.2f%%", hitRate);
@@ -86,11 +92,11 @@ namespace android {
     }
 
     void ImageInjector::monitorThreadLoop() {
-        ALOGI("Monitor thread started - Cache-enabled mode");
+        ALOGI("Monitor thread started - Enhanced safety mode");
         ALOGI("Cache size: %d frames, Scan interval: %dms", CACHE_SIZE, SCAN_INTERVAL_MS);
 
         int consecutiveEmptyScans = 0;
-        const int MAX_CONSECUTIVE_EMPTY_SCANS = 5;
+        const int MAX_CONSECUTIVE_EMPTY_SCANS = 3;  // 减少连续空扫描次数
         int scanCount = 0;
 
         while (!mExitRequested) {
@@ -140,11 +146,13 @@ namespace android {
                     }
                 }
 
-                // 3. 处理找到的文件
+                // 3. 处理找到的文件（限制处理数量）
                 int loadedCount = 0;
-                for (size_t i = 0; i < imageFiles.size(); i++) {
+                int maxFilesToProcess = std::min(5, (int)imageFiles.size());  // 限制每次最多处理5个文件
+                
+                for (int i = 0; i < maxFilesToProcess; i++) {
                     const auto& filePath = imageFiles[i];
-                    bool isLastFile = (i == imageFiles.size() - 1);
+                    bool isLastFile = (i == maxFilesToProcess - 1);
                     
                     if (mCacheSize.load() >= CACHE_SIZE) {
                         ALOGW("Cache full (%d/%d), stopping file loading",
@@ -170,6 +178,8 @@ namespace android {
                         } else {
                             ALOGI("Keeping last image file: %s", filePath.c_str());
                         }
+                    } else {
+                        mMemoryErrors++;
                     }
                 }
 
@@ -219,7 +229,7 @@ namespace android {
         ALOGI("Adding frame to cache: %s (ID: %d)", filePath.c_str(), frameId);
 
         // 1. 检查内存使用量
-        if (mCurrentMemoryUsage.load() > MAX_MEMORY_USAGE) {
+        if (!checkMemoryLimit(MAX_IMAGE_SIZE)) {
             ALOGW("Memory usage too high (%zu bytes), skipping file: %s", 
                   mCurrentMemoryUsage.load(), filePath.c_str());
             return false;
@@ -279,17 +289,29 @@ namespace android {
             return false;
         }
 
-        // 解码图片
+        // 5. 安全地解码图片
         std::vector<uint8_t> rgbData;
         int width, height;
-        if (!decodeImage(fileData.data(), fileSize, rgbData, width, height)) {
-            ALOGE("Failed to decode image");
+        
+        try {
+            if (!decodeImage(fileData.data(), fileSize, rgbData, width, height)) {
+                ALOGE("Failed to decode image: %s", filePath.c_str());
+                return false;
+            }
+        } catch (const std::exception& e) {
+            ALOGE("Exception during image decode: %s", e.what());
             return false;
         }
 
         ALOGI("Decoded image: %dx%d", width, height);
 
-        // 确定目标分辨率
+        // 6. 检查图片尺寸合理性
+        if (width <= 0 || height <= 0 || width > MAX_IMAGE_DIMENSION || height > MAX_IMAGE_DIMENSION) {
+            ALOGW("Invalid image dimensions: %dx%d, skipping file: %s", width, height, filePath.c_str());
+            return false;
+        }
+
+        // 7. 确定目标分辨率
         int targetWidth = width;
         int targetHeight = height;
 
@@ -298,36 +320,47 @@ namespace android {
                     (float)MAX_INJECTION_WIDTH / width,
                     (float)MAX_INJECTION_HEIGHT / height
             );
-            targetWidth = (int)(width * scale);
-            targetHeight = (int)(height * scale);
+            targetWidth = std::max(1, (int)(width * scale));
+            targetHeight = std::max(1, (int)(height * scale));
             ALOGI("Scaling image from %dx%d to %dx%d", width, height, targetWidth, targetHeight);
         }
 
-        // 转换为 YUV
+        // 8. 安全地转换为 YUV
         std::vector<uint8_t> yuvData;
-        if (!convertRGBToYUV(rgbData, width, height, yuvData)) {
-            ALOGE("Failed to convert to YUV");
+        try {
+            if (!convertRGBToYUV(rgbData, width, height, yuvData)) {
+                ALOGE("Failed to convert to YUV: %s", filePath.c_str());
+                return false;
+            }
+        } catch (const std::exception& e) {
+            ALOGE("Exception during RGB to YUV conversion: %s", e.what());
             return false;
         }
 
-        // 如果需要缩放
+        // 9. 安全地缩放图片
         std::vector<uint8_t> finalYuvData;
-        if (targetWidth != width || targetHeight != height) {
-            if (!scaleYUVImage(yuvData, width, height, finalYuvData, targetWidth, targetHeight)) {
-                ALOGE("Failed to scale image");
-                return false;
+        try {
+            if (targetWidth != width || targetHeight != height) {
+                if (!scaleYUVImage(yuvData, width, height, finalYuvData, targetWidth, targetHeight)) {
+                    ALOGE("Failed to scale image: %s", filePath.c_str());
+                    return false;
+                }
+            } else {
+                finalYuvData = std::move(yuvData);
             }
-        } else {
-            finalYuvData = std::move(yuvData);
+        } catch (const std::exception& e) {
+            ALOGE("Exception during image scaling: %s", e.what());
+            return false;
         }
 
-        // 3. 将数据复制到缓存槽
+        // 10. 将数据复制到缓存槽
         std::lock_guard<std::mutex> lock(mCacheMutex);
 
         CachedFrame& frame = mFrameCache[cacheIndex];
 
-        // 如果替换现有帧，先减少计数
+        // 如果替换现有帧，先释放内存
         if (frame.valid) {
+            releaseMemory(frame.memorySize);
             mCacheSize--;
         }
 
@@ -339,14 +372,34 @@ namespace android {
         frame.loadTime = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
         frame.valid = true;
+        frame.memorySize = frame.yuvData.size();
+
+        // 更新内存使用量
+        updateMemoryUsage(frame.memorySize);
 
         // 增加计数
         mCacheSize++;
 
-        ALOGI("Frame added to cache at slot %d, ID: %d, size: %dx%d, cache size: %d",
-              cacheIndex, frameId, targetWidth, targetHeight, mCacheSize.load());
+        ALOGI("Frame added to cache at slot %d, ID: %d, size: %dx%d, memory: %zu bytes, cache size: %d",
+              cacheIndex, frameId, targetWidth, targetHeight, frame.memorySize, mCacheSize.load());
 
         return true;
+    }
+
+    bool ImageInjector::checkMemoryLimit(size_t additionalSize) {
+        return (mCurrentMemoryUsage.load() + additionalSize) <= MAX_MEMORY_USAGE;
+    }
+
+    void ImageInjector::updateMemoryUsage(size_t size) {
+        mCurrentMemoryUsage += size;
+    }
+
+    void ImageInjector::releaseMemory(size_t size) {
+        if (mCurrentMemoryUsage.load() >= size) {
+            mCurrentMemoryUsage -= size;
+        } else {
+            mCurrentMemoryUsage.store(0);
+        }
     }
 
     bool ImageInjector::getNextFrameForInjection(CachedFrame& frame) {
@@ -395,19 +448,21 @@ namespace android {
                       frame.frameId, (long long)(currentTime - frame.loadTime));
 
                 // 释放内存
+                releaseMemory(frame.memorySize);
                 std::vector<uint8_t> empty;
                 frame.yuvData.swap(empty);
                 frame.yuvData.shrink_to_fit();
 
                 frame.valid = false;
+                frame.memorySize = 0;
                 cleanedCount++;
             }
         }
 
         if (cleanedCount > 0) {
             mCacheSize -= cleanedCount;
-            ALOGI("Cleaned %d expired frames, current cache size: %d",
-                  cleanedCount, mCacheSize.load());
+            ALOGI("Cleaned %d expired frames, current cache size: %d, memory usage: %zuMB",
+                  cleanedCount, mCacheSize.load(), mCurrentMemoryUsage.load() / (1024*1024));
         }
     }
 
@@ -416,15 +471,18 @@ namespace android {
 
         for (auto& frame : mFrameCache) {
             if (frame.valid) {
+                releaseMemory(frame.memorySize);
                 std::vector<uint8_t> empty;
                 frame.yuvData.swap(empty);
                 frame.yuvData.shrink_to_fit();
                 frame.valid = false;
+                frame.memorySize = 0;
             }
         }
 
         mCacheSize.store(0);
         mInjectionIndex.store(0);
+        mCurrentMemoryUsage.store(0);
         ALOGI("Cache cleared");
     }
 
@@ -461,14 +519,14 @@ namespace android {
         int cacheSize = mCacheSize.load();
         bool should = enabled && (cacheSize > 0);
 
-        ALOGI("shouldInject: %d (enabled: %d, cache size: %d)",
+        ALOGV("shouldInject: %d (enabled: %d, cache size: %d)",
               should, enabled, cacheSize);
 
         if (!enabled) {
-            ALOGW("Injection disabled - no files loaded");
+            ALOGV("Injection disabled - no files loaded");
         }
         if (cacheSize == 0) {
-            ALOGW("Cache empty - no frames available");
+            ALOGV("Cache empty - no frames available");
         }
 
         return should;
@@ -476,11 +534,11 @@ namespace android {
 
     bool ImageInjector::injectToBuffer(void* bufferData, uint32_t width, uint32_t height,
                                        uint32_t stride, uint32_t format) {
-        ALOGI("injectToBuffer called: %dx%d, format=%d, stride=%d",
+        ALOGV("injectToBuffer called: %dx%d, format=%d, stride=%d",
               width, height, format, stride);
 
         if (!shouldInject()) {
-            ALOGI("shouldInject returned false, skipping injection");
+            ALOGV("shouldInject returned false, skipping injection");
             return false;
         }
 
@@ -496,7 +554,7 @@ namespace android {
             return false;
         }
 
-        ALOGI("Injecting frame ID: %d, size: %dx%d",
+        ALOGV("Injecting frame ID: %d, size: %dx%d",
               frame.frameId, frame.width, frame.height);
 
         // 2. 检查格式
@@ -513,21 +571,32 @@ namespace android {
             sourceData = frame.yuvData.data();
             ALOGV("Frame size matches target, no scaling needed");
         } else {
-            ALOGI("Scaling frame from %dx%d to %dx%d",
+            ALOGV("Scaling frame from %dx%d to %dx%d",
                   frame.width, frame.height, width, height);
-            if (!scaleYUVImage(frame.yuvData, frame.width, frame.height,
-                               scaledData, width, height)) {
-                ALOGE("Failed to scale frame");
+            try {
+                if (!scaleYUVImage(frame.yuvData, frame.width, frame.height,
+                                   scaledData, width, height)) {
+                    ALOGE("Failed to scale frame");
+                    return false;
+                }
+                sourceData = scaledData.data();
+            } catch (const std::exception& e) {
+                ALOGE("Exception during frame scaling: %s", e.what());
                 return false;
             }
-            sourceData = scaledData.data();
         }
 
         // 4. 复制到buffer
-        bool success = copyYUVToBuffer(sourceData, width, height, stride, bufferData);
+        bool success = false;
+        try {
+            success = copyYUVToBuffer(sourceData, width, height, stride, bufferData);
+        } catch (const std::exception& e) {
+            ALOGE("Exception during buffer copy: %s", e.what());
+            return false;
+        }
 
         if (success) {
-            ALOGI("Successfully injected frame ID: %d", frame.frameId);
+            ALOGV("Successfully injected frame ID: %d", frame.frameId);
         } else {
             ALOGW("Failed to inject frame ID: %d", frame.frameId);
         }

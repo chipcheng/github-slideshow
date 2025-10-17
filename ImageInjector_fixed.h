@@ -20,6 +20,7 @@ namespace android {
 /**
  * ImageInjector - 在 Surface 层注入图片到相机数据流
  * 支持多帧缓存队列，优化大量图片帧处理
+ * 修复版本：增强内存管理和错误处理
  */
     class ImageInjector {
     public:
@@ -51,8 +52,9 @@ namespace android {
             int64_t loadTime;
             int frameId;
             bool valid;
+            size_t memorySize;  // 添加内存大小跟踪
 
-            CachedFrame() : width(0), height(0), loadTime(0), frameId(-1), valid(false) {}
+            CachedFrame() : width(0), height(0), loadTime(0), frameId(-1), valid(false), memorySize(0) {}
         };
 
         bool addFrameToCache(const std::string& filePath, int frameId);
@@ -79,17 +81,27 @@ namespace android {
         std::vector<std::string> getAllImageFiles();
         bool deleteFile(const std::string& filePath);
 
+        // 内存管理
+        bool checkMemoryLimit(size_t additionalSize);
+        void updateMemoryUsage(size_t size);
+        void releaseMemory(size_t size);
+
         // 配置常量
         static constexpr const char* MONITOR_PATH = "/data/misc/cameraserver/";
         static constexpr const char* IMAGE_PREFIX = "inject_";
-        static constexpr int SCAN_INTERVAL_MS = 1000;  // 更频繁的扫描，应对高帧率
+        static constexpr int SCAN_INTERVAL_MS = 2000;  // 增加扫描间隔，减少CPU负载
         static constexpr int MAX_INJECTION_WIDTH = 1920;
         static constexpr int MAX_INJECTION_HEIGHT = 1080;
 
         // 缓存配置
-        static constexpr int CACHE_SIZE = 10;           // 缓存帧数
-        static constexpr int MAX_CACHE_SIZE = 20;       // 最大缓存帧数（防止内存溢出）
+        static constexpr int CACHE_SIZE = 5;            // 减少缓存大小，降低内存使用
+        static constexpr int MAX_CACHE_SIZE = 10;       // 减少最大缓存帧数
         static constexpr int64_t FRAME_EXPIRY_MS = 30000; // 帧过期时间（30秒）
+
+        // 内存管理配置
+        static constexpr size_t MAX_MEMORY_USAGE = 50 * 1024 * 1024;  // 最大内存使用量（50MB）
+        static constexpr size_t MAX_IMAGE_SIZE = 5 * 1024 * 1024;     // 单个图片最大大小（5MB）
+        static constexpr size_t MAX_IMAGE_DIMENSION = 4096;           // 最大图片尺寸
 
         // 线程控制
         std::thread mMonitorThread;
@@ -106,19 +118,18 @@ namespace android {
         std::atomic<int> mCacheSize;
         std::atomic<int> mInjectionIndex;
 
+        // 内存管理
+        std::atomic<size_t> mCurrentMemoryUsage;  // 当前内存使用量（字节）
+
         // 性能统计
         std::atomic<int64_t> mTotalFramesProcessed;
         std::atomic<int64_t> mCacheHits;
         std::atomic<int64_t> mCacheMisses;
+        std::atomic<int64_t> mMemoryErrors;
 
         // 最后一个图片帧管理
         std::string mLastImageFile;  // 最后一个图片文件路径
         std::mutex mLastImageMutex;  // 保护最后一个图片文件的互斥锁
-
-        // 内存管理
-        std::atomic<size_t> mCurrentMemoryUsage;  // 当前内存使用量（字节）
-        static constexpr size_t MAX_MEMORY_USAGE = 100 * 1024 * 1024;  // 最大内存使用量（100MB）
-        static constexpr size_t MAX_IMAGE_SIZE = 10 * 1024 * 1024;     // 单个图片最大大小（10MB）
 
         // 原有成员变量（为了兼容性保留）
         std::mutex mDataMutex;
