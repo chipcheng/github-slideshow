@@ -28,6 +28,10 @@
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
 
+// SELinux 相关头文件
+#include <selinux/selinux.h>
+#include <selinux/label.h>
+
 namespace android {
 
     ImageInjector::ImageInjector()
