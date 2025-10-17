@@ -20,13 +20,13 @@
 #include <log/log.h>
 #include <jpeglib.h>
 
-// 视频解码相关头文件
-#include <media/NdkMediaCodec.h>
-#include <media/NdkMediaExtractor.h>
-#include <media/NdkMediaFormat.h>
-#include <media/NdkMediaMuxer.h>
-#include <android/native_window.h>
-#include <android/native_window_jni.h>
+// 视频解码相关头文件（暂时禁用）
+// #include <media/NdkMediaCodec.h>
+// #include <media/NdkMediaExtractor.h>
+// #include <media/NdkMediaFormat.h>
+// #include <media/NdkMediaMuxer.h>
+// #include <android/native_window.h>
+// #include <android/native_window_jni.h>
 
 // SELinux 相关头文件
 #include <selinux/selinux.h>
@@ -46,12 +46,7 @@ namespace android {
               mCacheMisses(0),
               mInjectionWidth(0),
               mInjectionHeight(0),
-              mLastModTime(0),
-              mVideoDecoder(nullptr),
-              mMediaExtractor(nullptr),
-              mVideoFormat(nullptr),
-              mVideoDecoderInitialized(false),
-              mCurrentVideoFrameIndex(0) {
+              mLastModTime(0) {
 
         // 初始化缓存
         mFrameCache.resize(MAX_CACHE_SIZE);
@@ -65,7 +60,7 @@ namespace android {
     ImageInjector::~ImageInjector() {
         stopMonitoring();
         clearCache();
-        cleanupVideoDecoder();
+        // cleanupVideoDecoder();
         ALOGI("ImageInjector destroyed");
     }
 
@@ -147,22 +142,10 @@ namespace android {
                         }
                     }
                 }
-                // 检查视频文件
-                else if (filename.find(VIDEO_PREFIX) == 0) {
-                    if (filename.find(".mp4") != std::string::npos ||
-                        filename.find(".avi") != std::string::npos ||
-                        filename.find(".mkv") != std::string::npos) {
-                        std::string fullPath = std::string(MONITOR_PATH) + filename;
-                        
-                        // 自动修复文件权限
-                        if (fixFilePermissions(fullPath)) {
-                            imageFiles.push_back(fullPath);
-                            ALOGI("Found video file: %s", fullPath.c_str());
-                        } else {
-                            ALOGW("Skipping video file due to permission issues: %s", fullPath.c_str());
-                        }
-                    }
-                }
+                // 视频文件处理暂时禁用
+                // else if (filename.find(VIDEO_PREFIX) == 0) {
+                //     // 视频文件处理逻辑
+                // }
             }
             closedir(dir);
 
@@ -193,76 +176,23 @@ namespace android {
                         break;
                     }
 
-                    // 检查文件类型
-                    bool isVideoFile = (filePath.find(VIDEO_PREFIX) != std::string::npos);
-                    
-                    if (isVideoFile) {
-                        // 处理视频文件
-                        ALOGI("Processing video file: %s", filePath.c_str());
-                        if (loadVideoFile(filePath)) {
-                            // 将视频帧添加到缓存
-                            std::lock_guard<std::mutex> lock(mVideoFramesMutex);
-                            for (size_t j = 0; j < mVideoFrames.size() && mCacheSize.load() < CACHE_SIZE; j++) {
-                                int frameId = mNextFrameId++;
-                                
-                                // 创建临时CachedFrame
-                                CachedFrame tempFrame;
-                                tempFrame.yuvData = mVideoFrames[j];
-                                tempFrame.width = 1920;  // 从视频格式获取
-                                tempFrame.height = 1080; // 从视频格式获取
-                                tempFrame.frameId = frameId;
-                                tempFrame.sourceFile = filePath;
-                                tempFrame.loadTime = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                    std::chrono::system_clock::now().time_since_epoch()).count();
-                                tempFrame.valid = true;
-                                
-                                // 添加到缓存
-                                int cacheIndex = findEmptyCacheSlot();
-                                if (cacheIndex == -1) {
-                                    cacheIndex = findOldestCacheSlot();
-                                }
-                                
-                                if (cacheIndex >= 0) {
-                                    std::lock_guard<std::mutex> cacheLock(mCacheMutex);
-                                    mFrameCache[cacheIndex] = std::move(tempFrame);
-                                    mCacheSize++;
-                                    loadedCount++;
-                                    mTotalFramesProcessed++;
-                                }
-                            }
-                            
-                            // 更新最后一个文件
-                            {
-                                std::lock_guard<std::mutex> lock(mLastImageMutex);
-                                mLastImageFile = filePath;
-                            }
-                            
-                            // 如果不是最后一个文件，立即删除源文件
-                            if (!isLastFile) {
-                                cleanupSourceFile(filePath);
-                            } else {
-                                ALOGI("Keeping last video file: %s", filePath.c_str());
-                            }
+                    // 处理图片文件
+                    int frameId = mNextFrameId++;
+                    if (addFrameToCache(filePath, frameId)) {
+                        loadedCount++;
+                        mTotalFramesProcessed++;
+
+                        // 更新最后一个图片文件
+                        {
+                            std::lock_guard<std::mutex> lock(mLastImageMutex);
+                            mLastImageFile = filePath;
                         }
-                    } else {
-                        // 处理图片文件（原有逻辑）
-                        int frameId = mNextFrameId++;
-                        if (addFrameToCache(filePath, frameId)) {
-                            loadedCount++;
-                            mTotalFramesProcessed++;
 
-                            // 更新最后一个图片文件
-                            {
-                                std::lock_guard<std::mutex> lock(mLastImageMutex);
-                                mLastImageFile = filePath;
-                            }
-
-                            // 如果不是最后一个文件，立即删除源文件
-                            if (!isLastFile) {
-                                cleanupSourceFile(filePath);
-                            } else {
-                                ALOGI("Keeping last image file: %s", filePath.c_str());
-                            }
+                        // 如果不是最后一个文件，立即删除源文件
+                        if (!isLastFile) {
+                            cleanupSourceFile(filePath);
+                        } else {
+                            ALOGI("Keeping last image file: %s", filePath.c_str());
                         }
                     }
                 }
@@ -957,8 +887,9 @@ namespace android {
         return true;
     }
 
-    // ==================== 视频解码相关函数 ====================
+    // ==================== 视频解码相关函数（暂时禁用） ====================
 
+    /*
     bool ImageInjector::loadVideoFile(const std::string& filePath) {
         ALOGI("Loading video file: %s", filePath.c_str());
         
@@ -1020,7 +951,7 @@ namespace android {
         std::lock_guard<std::mutex> lock(mVideoDecoderMutex);
         
         // 创建媒体提取器
-        mMediaExtractor = AMediaExtractor_new();
+        mMediaExtractor = (void*)AMediaExtractor_new();
         if (!mMediaExtractor) {
             ALOGE("Failed to create media extractor");
             return false;
@@ -1233,5 +1164,6 @@ namespace android {
         ALOGI("Extracted %d video frames", frameCount);
         return frameCount > 0;
     }
+    */
 
 } // namespace android

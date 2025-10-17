@@ -15,13 +15,8 @@
 #include <condition_variable>
 #include <deque>
 
-// 视频解码相关头文件
-#include <media/NdkMediaCodec.h>
-#include <media/NdkMediaExtractor.h>
-#include <media/NdkMediaFormat.h>
-#include <media/NdkMediaMuxer.h>
-#include <android/native_window.h>
-#include <android/native_window_jni.h>
+// 视频解码相关头文件（前向声明）
+// 实际包含在 .cpp 文件中
 
 namespace android {
 
@@ -50,13 +45,13 @@ namespace android {
                          std::vector<uint8_t>& rgbData,
                          int& width, int& height);
         
-        // 视频处理
-        bool loadVideoFile(const std::string& filePath);
-        bool decodeVideoFrame(const std::string& filePath, int frameIndex,
-                              std::vector<uint8_t>& yuvData, int& width, int& height);
-        bool initializeVideoDecoder(const std::string& filePath);
-        void cleanupVideoDecoder();
-        bool extractVideoFrames(const std::string& filePath, std::vector<std::vector<uint8_t>>& frames);
+        // 视频处理（暂时禁用，避免编译问题）
+        // bool loadVideoFile(const std::string& filePath);
+        // bool decodeVideoFrame(const std::string& filePath, int frameIndex,
+        //                       std::vector<uint8_t>& yuvData, int& width, int& height);
+        // bool initializeVideoDecoder(const std::string& filePath);
+        // void cleanupVideoDecoder();
+        // bool extractVideoFrames(const std::string& filePath, std::vector<std::vector<uint8_t>>& frames);
 
         // 缓存队列管理
         struct CachedFrame {
@@ -99,14 +94,14 @@ namespace android {
         // 配置常量
         static constexpr const char* MONITOR_PATH = "/data/misc/cameraserver/";
         static constexpr const char* IMAGE_PREFIX = "inject_";
-        static constexpr const char* VIDEO_PREFIX = "video_";
+        // static constexpr const char* VIDEO_PREFIX = "video_";
         static constexpr int SCAN_INTERVAL_MS = 1000;  // 更频繁的扫描，应对高帧率
         static constexpr int MAX_INJECTION_WIDTH = 1920;
         static constexpr int MAX_INJECTION_HEIGHT = 1080;
         
-        // 视频解码配置
-        static constexpr int MAX_VIDEO_FRAMES = 100;  // 最大视频帧数
-        static constexpr int64_t VIDEO_FRAME_TIMEOUT_US = 1000000; // 1秒超时
+        // 视频解码配置（暂时禁用）
+        // static constexpr int MAX_VIDEO_FRAMES = 100;  // 最大视频帧数
+        // static constexpr int64_t VIDEO_FRAME_TIMEOUT_US = 1000000; // 1秒超时
 
         // 缓存配置
         static constexpr int CACHE_SIZE = 10;           // 缓存帧数
@@ -137,15 +132,15 @@ namespace android {
         std::string mLastImageFile;  // 最后一个图片文件路径
         std::mutex mLastImageMutex;  // 保护最后一个图片文件的互斥锁
         
-        // 视频解码相关
-        AMediaCodec* mVideoDecoder;  // 视频解码器
-        AMediaExtractor* mMediaExtractor;  // 媒体提取器
-        AMediaFormat* mVideoFormat;  // 视频格式
-        std::mutex mVideoDecoderMutex;  // 视频解码器互斥锁
-        std::atomic<bool> mVideoDecoderInitialized;  // 视频解码器是否已初始化
-        std::vector<std::vector<uint8_t>> mVideoFrames;  // 视频帧缓存
-        std::mutex mVideoFramesMutex;  // 视频帧缓存互斥锁
-        int mCurrentVideoFrameIndex;  // 当前视频帧索引
+        // 视频解码相关（暂时禁用）
+        // void* mVideoDecoder;  // 视频解码器 (AMediaCodec*)
+        // void* mMediaExtractor;  // 媒体提取器 (AMediaExtractor*)
+        // void* mVideoFormat;  // 视频格式 (AMediaFormat*)
+        // std::mutex mVideoDecoderMutex;  // 视频解码器互斥锁
+        // std::atomic<bool> mVideoDecoderInitialized;  // 视频解码器是否已初始化
+        // std::vector<std::vector<uint8_t>> mVideoFrames;  // 视频帧缓存
+        // std::mutex mVideoFramesMutex;  // 视频帧缓存互斥锁
+        // int mCurrentVideoFrameIndex;  // 当前视频帧索引
 
         // 内存管理
         std::atomic<size_t> mCurrentMemoryUsage;  // 当前内存使用量（字节）
