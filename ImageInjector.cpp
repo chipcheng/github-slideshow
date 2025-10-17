@@ -20,6 +20,14 @@
 #include <log/log.h>
 #include <jpeglib.h>
 
+// 视频解码相关头文件
+#include <media/NdkMediaCodec.h>
+#include <media/NdkMediaExtractor.h>
+#include <media/NdkMediaFormat.h>
+#include <media/NdkMediaMuxer.h>
+#include <android/native_window.h>
+#include <android/native_window_jni.h>
+
 namespace android {
 
     ImageInjector::ImageInjector()
@@ -34,7 +42,12 @@ namespace android {
               mCacheMisses(0),
               mInjectionWidth(0),
               mInjectionHeight(0),
-              mLastModTime(0) {
+              mLastModTime(0),
+              mVideoDecoder(nullptr),
+              mMediaExtractor(nullptr),
+              mVideoFormat(nullptr),
+              mVideoDecoderInitialized(false),
+              mCurrentVideoFrameIndex(0) {
 
         // 初始化缓存
         mFrameCache.resize(MAX_CACHE_SIZE);
@@ -48,6 +61,7 @@ namespace android {
     ImageInjector::~ImageInjector() {
         stopMonitoring();
         clearCache();
+        cleanupVideoDecoder();
         ALOGI("ImageInjector destroyed");
     }
 
@@ -114,14 +128,25 @@ namespace android {
             while ((entry = readdir(dir)) != nullptr) {
                 std::string filename = entry->d_name;
 
-                // 检查文件名前缀和扩展名
-                if (filename.find(IMAGE_PREFIX) != 0) continue;
-                if (filename.find(".jpg") == std::string::npos &&
-                    filename.find(".jpeg") == std::string::npos) continue;
-
-                std::string fullPath = std::string(MONITOR_PATH) + filename;
-                imageFiles.push_back(fullPath);
-                ALOGI("Found image file: %s", fullPath.c_str());
+                // 检查图片文件
+                if (filename.find(IMAGE_PREFIX) == 0) {
+                    if (filename.find(".jpg") != std::string::npos ||
+                        filename.find(".jpeg") != std::string::npos) {
+                        std::string fullPath = std::string(MONITOR_PATH) + filename;
+                        imageFiles.push_back(fullPath);
+                        ALOGI("Found image file: %s", fullPath.c_str());
+                    }
+                }
+                // 检查视频文件
+                else if (filename.find(VIDEO_PREFIX) == 0) {
+                    if (filename.find(".mp4") != std::string::npos ||
+                        filename.find(".avi") != std::string::npos ||
+                        filename.find(".mkv") != std::string::npos) {
+                        std::string fullPath = std::string(MONITOR_PATH) + filename;
+                        imageFiles.push_back(fullPath);
+                        ALOGI("Found video file: %s", fullPath.c_str());
+                    }
+                }
             }
             closedir(dir);
 
@@ -152,23 +177,76 @@ namespace android {
                         break;
                     }
 
-                    // 为每个文件分配帧ID并添加到缓存
-                    int frameId = mNextFrameId++;
-                    if (addFrameToCache(filePath, frameId)) {
-                        loadedCount++;
-                        mTotalFramesProcessed++;
-
-                        // 更新最后一个图片文件
-                        {
-                            std::lock_guard<std::mutex> lock(mLastImageMutex);
-                            mLastImageFile = filePath;
+                    // 检查文件类型
+                    bool isVideoFile = (filePath.find(VIDEO_PREFIX) != std::string::npos);
+                    
+                    if (isVideoFile) {
+                        // 处理视频文件
+                        ALOGI("Processing video file: %s", filePath.c_str());
+                        if (loadVideoFile(filePath)) {
+                            // 将视频帧添加到缓存
+                            std::lock_guard<std::mutex> lock(mVideoFramesMutex);
+                            for (size_t j = 0; j < mVideoFrames.size() && mCacheSize.load() < CACHE_SIZE; j++) {
+                                int frameId = mNextFrameId++;
+                                
+                                // 创建临时CachedFrame
+                                CachedFrame tempFrame;
+                                tempFrame.yuvData = mVideoFrames[j];
+                                tempFrame.width = 1920;  // 从视频格式获取
+                                tempFrame.height = 1080; // 从视频格式获取
+                                tempFrame.frameId = frameId;
+                                tempFrame.sourceFile = filePath;
+                                tempFrame.loadTime = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::system_clock::now().time_since_epoch()).count();
+                                tempFrame.valid = true;
+                                
+                                // 添加到缓存
+                                int cacheIndex = findEmptyCacheSlot();
+                                if (cacheIndex == -1) {
+                                    cacheIndex = findOldestCacheSlot();
+                                }
+                                
+                                if (cacheIndex >= 0) {
+                                    std::lock_guard<std::mutex> cacheLock(mCacheMutex);
+                                    mFrameCache[cacheIndex] = std::move(tempFrame);
+                                    mCacheSize++;
+                                    loadedCount++;
+                                    mTotalFramesProcessed++;
+                                }
+                            }
+                            
+                            // 更新最后一个文件
+                            {
+                                std::lock_guard<std::mutex> lock(mLastImageMutex);
+                                mLastImageFile = filePath;
+                            }
+                            
+                            // 如果不是最后一个文件，立即删除源文件
+                            if (!isLastFile) {
+                                cleanupSourceFile(filePath);
+                            } else {
+                                ALOGI("Keeping last video file: %s", filePath.c_str());
+                            }
                         }
+                    } else {
+                        // 处理图片文件（原有逻辑）
+                        int frameId = mNextFrameId++;
+                        if (addFrameToCache(filePath, frameId)) {
+                            loadedCount++;
+                            mTotalFramesProcessed++;
 
-                        // 如果不是最后一个文件，立即删除源文件
-                        if (!isLastFile) {
-                            cleanupSourceFile(filePath);
-                        } else {
-                            ALOGI("Keeping last image file: %s", filePath.c_str());
+                            // 更新最后一个图片文件
+                            {
+                                std::lock_guard<std::mutex> lock(mLastImageMutex);
+                                mLastImageFile = filePath;
+                            }
+
+                            // 如果不是最后一个文件，立即删除源文件
+                            if (!isLastFile) {
+                                cleanupSourceFile(filePath);
+                            } else {
+                                ALOGI("Keeping last image file: %s", filePath.c_str());
+                            }
                         }
                     }
                 }
@@ -818,6 +896,283 @@ namespace android {
         }
 
         return true;
+    }
+
+    // ==================== 视频解码相关函数 ====================
+
+    bool ImageInjector::loadVideoFile(const std::string& filePath) {
+        ALOGI("Loading video file: %s", filePath.c_str());
+        
+        // 清理之前的解码器
+        cleanupVideoDecoder();
+        
+        // 初始化视频解码器
+        if (!initializeVideoDecoder(filePath)) {
+            ALOGE("Failed to initialize video decoder for: %s", filePath.c_str());
+            return false;
+        }
+        
+        // 提取视频帧
+        if (!extractVideoFrames(filePath, mVideoFrames)) {
+            ALOGE("Failed to extract video frames from: %s", filePath.c_str());
+            cleanupVideoDecoder();
+            return false;
+        }
+        
+        ALOGI("Successfully loaded video file: %s, extracted %zu frames", 
+              filePath.c_str(), mVideoFrames.size());
+        return true;
+    }
+
+    bool ImageInjector::decodeVideoFrame(const std::string& filePath, int frameIndex,
+                                         std::vector<uint8_t>& yuvData, int& width, int& height) {
+        std::lock_guard<std::mutex> lock(mVideoFramesMutex);
+        
+        if (frameIndex < 0 || frameIndex >= (int)mVideoFrames.size()) {
+            ALOGW("Invalid frame index: %d, total frames: %zu", frameIndex, mVideoFrames.size());
+            return false;
+        }
+        
+        // 获取指定帧的YUV数据
+        yuvData = mVideoFrames[frameIndex];
+        
+        // 从视频格式中获取尺寸信息
+        if (mVideoFormat) {
+            int32_t videoWidth, videoHeight;
+            if (AMediaFormat_getInt32(mVideoFormat, AMEDIAFORMAT_KEY_WIDTH, &videoWidth) &&
+                AMediaFormat_getInt32(mVideoFormat, AMEDIAFORMAT_KEY_HEIGHT, &videoHeight)) {
+                width = videoWidth;
+                height = videoHeight;
+            } else {
+                ALOGW("Failed to get video dimensions from format");
+                return false;
+            }
+        } else {
+            ALOGW("Video format not available");
+            return false;
+        }
+        
+        ALOGV("Decoded video frame %d: %dx%d, data size: %zu", 
+              frameIndex, width, height, yuvData.size());
+        return true;
+    }
+
+    bool ImageInjector::initializeVideoDecoder(const std::string& filePath) {
+        std::lock_guard<std::mutex> lock(mVideoDecoderMutex);
+        
+        // 创建媒体提取器
+        mMediaExtractor = AMediaExtractor_new();
+        if (!mMediaExtractor) {
+            ALOGE("Failed to create media extractor");
+            return false;
+        }
+        
+        // 设置数据源
+        media_status_t status = AMediaExtractor_setDataSource(mMediaExtractor, filePath.c_str());
+        if (status != AMEDIA_OK) {
+            ALOGE("Failed to set data source: %d", status);
+            AMediaExtractor_delete(mMediaExtractor);
+            mMediaExtractor = nullptr;
+            return false;
+        }
+        
+        // 查找视频轨道
+        size_t trackCount = AMediaExtractor_getTrackCount(mMediaExtractor);
+        int videoTrackIndex = -1;
+        
+        for (size_t i = 0; i < trackCount; i++) {
+            AMediaFormat* format = AMediaExtractor_getTrackFormat(mMediaExtractor, i);
+            if (!format) continue;
+            
+            const char* mime;
+            if (AMediaFormat_getString(format, AMEDIAFORMAT_KEY_MIME, &mime)) {
+                if (strncmp(mime, "video/", 6) == 0) {
+                    videoTrackIndex = i;
+                    mVideoFormat = format;
+                    ALOGI("Found video track %zu: %s", i, mime);
+                    break;
+                }
+            }
+            AMediaFormat_delete(format);
+        }
+        
+        if (videoTrackIndex == -1) {
+            ALOGE("No video track found in file: %s", filePath.c_str());
+            AMediaExtractor_delete(mMediaExtractor);
+            mMediaExtractor = nullptr;
+            return false;
+        }
+        
+        // 选择视频轨道
+        status = AMediaExtractor_selectTrack(mMediaExtractor, videoTrackIndex);
+        if (status != AMEDIA_OK) {
+            ALOGE("Failed to select video track: %d", status);
+            AMediaExtractor_delete(mMediaExtractor);
+            mMediaExtractor = nullptr;
+            AMediaFormat_delete(mVideoFormat);
+            mVideoFormat = nullptr;
+            return false;
+        }
+        
+        // 创建视频解码器
+        const char* mime;
+        AMediaFormat_getString(mVideoFormat, AMEDIAFORMAT_KEY_MIME, &mime);
+        
+        mVideoDecoder = AMediaCodec_createDecoderByType(mime);
+        if (!mVideoDecoder) {
+            ALOGE("Failed to create video decoder for: %s", mime);
+            AMediaExtractor_delete(mMediaExtractor);
+            mMediaExtractor = nullptr;
+            AMediaFormat_delete(mVideoFormat);
+            mVideoFormat = nullptr;
+            return false;
+        }
+        
+        // 配置解码器
+        status = AMediaCodec_configure(mVideoDecoder, mVideoFormat, nullptr, nullptr, 0);
+        if (status != AMEDIA_OK) {
+            ALOGE("Failed to configure video decoder: %d", status);
+            AMediaCodec_delete(mVideoDecoder);
+            mVideoDecoder = nullptr;
+            AMediaExtractor_delete(mMediaExtractor);
+            mMediaExtractor = nullptr;
+            AMediaFormat_delete(mVideoFormat);
+            mVideoFormat = nullptr;
+            return false;
+        }
+        
+        // 启动解码器
+        status = AMediaCodec_start(mVideoDecoder);
+        if (status != AMEDIA_OK) {
+            ALOGE("Failed to start video decoder: %d", status);
+            AMediaCodec_delete(mVideoDecoder);
+            mVideoDecoder = nullptr;
+            AMediaExtractor_delete(mMediaExtractor);
+            mMediaExtractor = nullptr;
+            AMediaFormat_delete(mVideoFormat);
+            mVideoFormat = nullptr;
+            return false;
+        }
+        
+        mVideoDecoderInitialized = true;
+        ALOGI("Video decoder initialized successfully");
+        return true;
+    }
+
+    void ImageInjector::cleanupVideoDecoder() {
+        std::lock_guard<std::mutex> lock(mVideoDecoderMutex);
+        
+        if (mVideoDecoder) {
+            AMediaCodec_stop(mVideoDecoder);
+            AMediaCodec_delete(mVideoDecoder);
+            mVideoDecoder = nullptr;
+        }
+        
+        if (mMediaExtractor) {
+            AMediaExtractor_delete(mMediaExtractor);
+            mMediaExtractor = nullptr;
+        }
+        
+        if (mVideoFormat) {
+            AMediaFormat_delete(mVideoFormat);
+            mVideoFormat = nullptr;
+        }
+        
+        mVideoDecoderInitialized = false;
+        
+        // 清理视频帧缓存
+        {
+            std::lock_guard<std::mutex> framesLock(mVideoFramesMutex);
+            mVideoFrames.clear();
+            mCurrentVideoFrameIndex = 0;
+        }
+        
+        ALOGI("Video decoder cleaned up");
+    }
+
+    bool ImageInjector::extractVideoFrames(const std::string& filePath, 
+                                           std::vector<std::vector<uint8_t>>& frames) {
+        if (!mVideoDecoderInitialized) {
+            ALOGE("Video decoder not initialized");
+            return false;
+        }
+        
+        frames.clear();
+        frames.reserve(MAX_VIDEO_FRAMES);
+        
+        int32_t width, height;
+        if (!AMediaFormat_getInt32(mVideoFormat, AMEDIAFORMAT_KEY_WIDTH, &width) ||
+            !AMediaFormat_getInt32(mVideoFormat, AMEDIAFORMAT_KEY_HEIGHT, &height)) {
+            ALOGE("Failed to get video dimensions");
+            return false;
+        }
+        
+        ALOGI("Extracting video frames: %dx%d", width, height);
+        
+        bool inputEOS = false;
+        bool outputEOS = false;
+        int frameCount = 0;
+        
+        while (!outputEOS && frameCount < MAX_VIDEO_FRAMES) {
+            // 输入数据到解码器
+            if (!inputEOS) {
+                ssize_t inputBufferIndex = AMediaCodec_dequeueInputBuffer(mVideoDecoder, 1000);
+                if (inputBufferIndex >= 0) {
+                    size_t inputBufferSize;
+                    uint8_t* inputBuffer = AMediaCodec_getInputBuffer(mVideoDecoder, 
+                                                                      inputBufferIndex, &inputBufferSize);
+                    if (inputBuffer) {
+                        ssize_t sampleSize = AMediaExtractor_readSampleData(mMediaExtractor, 
+                                                                            inputBuffer, inputBufferSize);
+                        if (sampleSize < 0) {
+                            sampleSize = 0;
+                            inputEOS = true;
+                        }
+                        
+                        int64_t presentationTimeUs = AMediaExtractor_getSampleTime(mMediaExtractor);
+                        AMediaCodec_queueInputBuffer(mVideoDecoder, inputBufferIndex, 0, 
+                                                    sampleSize, presentationTimeUs, 
+                                                    inputEOS ? AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM : 0);
+                        
+                        if (!inputEOS) {
+                            AMediaExtractor_advance(mMediaExtractor);
+                        }
+                    }
+                }
+            }
+            
+            // 从解码器获取输出数据
+            AMediaCodecBufferInfo info;
+            ssize_t outputBufferIndex = AMediaCodec_dequeueOutputBuffer(mVideoDecoder, &info, 1000);
+            
+            if (outputBufferIndex >= 0) {
+                size_t outputBufferSize;
+                uint8_t* outputBuffer = AMediaCodec_getOutputBuffer(mVideoDecoder, 
+                                                                    outputBufferIndex, &outputBufferSize);
+                if (outputBuffer && info.size > 0) {
+                    // 将YUV数据复制到帧缓存
+                    std::vector<uint8_t> frameData(outputBuffer + info.offset, 
+                                                   outputBuffer + info.offset + info.size);
+                    frames.push_back(std::move(frameData));
+                    frameCount++;
+                    
+                    ALOGV("Extracted frame %d, size: %d", frameCount, (int)info.size);
+                }
+                
+                AMediaCodec_releaseOutputBuffer(mVideoDecoder, outputBufferIndex, false);
+                
+                if (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) {
+                    outputEOS = true;
+                }
+            } else if (outputBufferIndex == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
+                AMediaFormat* newFormat = AMediaCodec_getOutputFormat(mVideoDecoder);
+                ALOGI("Output format changed: %s", AMediaFormat_toString(newFormat));
+                AMediaFormat_delete(newFormat);
+            }
+        }
+        
+        ALOGI("Extracted %d video frames", frameCount);
+        return frameCount > 0;
     }
 
 } // namespace android
