@@ -137,7 +137,7 @@ namespace android {
                     if (filename.find(".jpg") != std::string::npos ||
                         filename.find(".jpeg") != std::string::npos) {
                         std::string fullPath = std::string(MONITOR_PATH) + filename;
-                        
+
                         // 自动修复文件权限
                         if (fixFilePermissions(fullPath)) {
                             imageFiles.push_back(fullPath);
@@ -147,13 +147,13 @@ namespace android {
                         }
                     }
                 }
-                // 检查视频文件
+                    // 检查视频文件
                 else if (filename.find(VIDEO_PREFIX) == 0) {
                     if (filename.find(".mp4") != std::string::npos ||
                         filename.find(".avi") != std::string::npos ||
                         filename.find(".mkv") != std::string::npos) {
                         std::string fullPath = std::string(MONITOR_PATH) + filename;
-                        
+
                         // 自动修复文件权限
                         if (fixFilePermissions(fullPath)) {
                             imageFiles.push_back(fullPath);
@@ -186,7 +186,7 @@ namespace android {
                 for (size_t i = 0; i < imageFiles.size(); i++) {
                     const auto& filePath = imageFiles[i];
                     bool isLastFile = (i == imageFiles.size() - 1);
-                    
+
                     if (mCacheSize.load() >= CACHE_SIZE) {
                         ALOGW("Cache full (%d/%d), stopping file loading",
                               mCacheSize.load(), CACHE_SIZE);
@@ -195,7 +195,7 @@ namespace android {
 
                     // 检查文件类型
                     bool isVideoFile = (filePath.find(VIDEO_PREFIX) != std::string::npos);
-                    
+
                     if (isVideoFile) {
                         // 处理视频文件
                         ALOGI("Processing video file: %s", filePath.c_str());
@@ -204,7 +204,7 @@ namespace android {
                             std::lock_guard<std::mutex> lock(mVideoFramesMutex);
                             for (size_t j = 0; j < mVideoFrames.size() && mCacheSize.load() < CACHE_SIZE; j++) {
                                 int frameId = mNextFrameId++;
-                                
+
                                 // 创建临时CachedFrame
                                 CachedFrame tempFrame;
                                 tempFrame.yuvData = mVideoFrames[j];
@@ -213,15 +213,15 @@ namespace android {
                                 tempFrame.frameId = frameId;
                                 tempFrame.sourceFile = filePath;
                                 tempFrame.loadTime = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                    std::chrono::system_clock::now().time_since_epoch()).count();
+                                        std::chrono::system_clock::now().time_since_epoch()).count();
                                 tempFrame.valid = true;
-                                
+
                                 // 添加到缓存
                                 int cacheIndex = findEmptyCacheSlot();
                                 if (cacheIndex == -1) {
                                     cacheIndex = findOldestCacheSlot();
                                 }
-                                
+
                                 if (cacheIndex >= 0) {
                                     std::lock_guard<std::mutex> cacheLock(mCacheMutex);
                                     mFrameCache[cacheIndex] = std::move(tempFrame);
@@ -230,13 +230,13 @@ namespace android {
                                     mTotalFramesProcessed++;
                                 }
                             }
-                            
+
                             // 更新最后一个文件
                             {
                                 std::lock_guard<std::mutex> lock(mLastImageMutex);
                                 mLastImageFile = filePath;
                             }
-                            
+
                             // 如果不是最后一个文件，立即删除源文件
                             if (!isLastFile) {
                                 cleanupSourceFile(filePath);
@@ -314,14 +314,14 @@ namespace android {
 
         // 1. 检查内存使用量
         if (mCurrentMemoryUsage.load() > MAX_MEMORY_USAGE) {
-            ALOGW("Memory usage too high (%zu bytes), skipping file: %s", 
+            ALOGW("Memory usage too high (%zu bytes), skipping file: %s",
                   mCurrentMemoryUsage.load(), filePath.c_str());
             return false;
         }
 
         // 2. 检查缓存大小限制
         if (mCacheSize.load() >= CACHE_SIZE) {
-            ALOGW("Cache size limit reached (%d), skipping file: %s", 
+            ALOGW("Cache size limit reached (%d), skipping file: %s",
                   mCacheSize.load(), filePath.c_str());
             return false;
         }
@@ -362,7 +362,7 @@ namespace android {
             fileData.resize(fileSize);
             ssize_t bytesRead = read(fd, fileData.data(), fileSize);
             close(fd);
-            
+
             if (bytesRead != fileSize) {
                 ALOGE("Failed to read complete file: expected %ld, got %zd", fileSize, bytesRead);
                 return false;
@@ -674,33 +674,33 @@ namespace android {
 
     bool ImageInjector::fixFilePermissions(const std::string& filePath) {
         ALOGI("Fixing file permissions for: %s", filePath.c_str());
-        
+
         // 1. 设置文件权限为 666 (rw-rw-rw-)
         if (chmod(filePath.c_str(), 0666) != 0) {
             ALOGW("Failed to set file permissions: %s", strerror(errno));
         }
-        
+
         // 2. 设置文件所有者为 cameraserver
         if (chown(filePath.c_str(), 1000, 1000) != 0) {  // cameraserver 的 UID/GID 通常是 1000
             ALOGW("Failed to set file ownership: %s", strerror(errno));
         }
-        
+
         // 3. 设置 SELinux 上下文
         // 注意：这需要 root 权限或适当的 SELinux 策略
         const char* selinuxContext = "u:object_r:cameraserver_data_file:s0";
-        
+
         // 使用 setfilecon 系统调用设置 SELinux 上下文
         if (setfilecon(filePath.c_str(), selinuxContext) != 0) {
             ALOGW("Failed to set SELinux context: %s (this may require root privileges)", strerror(errno));
             // 即使 SELinux 上下文设置失败，文件权限修复可能仍然有效
         }
-        
+
         // 4. 验证权限是否设置成功
         struct stat fileStat;
         if (stat(filePath.c_str(), &fileStat) == 0) {
-            ALOGI("File permissions after fix: mode=%o, uid=%d, gid=%d", 
+            ALOGI("File permissions after fix: mode=%o, uid=%d, gid=%d",
                   fileStat.st_mode & 0777, fileStat.st_uid, fileStat.st_gid);
-            
+
             // 检查是否可读
             if (access(filePath.c_str(), R_OK) == 0) {
                 ALOGI("File is now readable by cameraserver");
@@ -960,72 +960,64 @@ namespace android {
     // ==================== 视频解码相关函数 ====================
 
     bool ImageInjector::loadVideoFile(const std::string& filePath) {
-        ALOGI("Loading video file: %s", filePath.c_str());
-        
-        // 清理之前的解码器
-        cleanupVideoDecoder();
-        
-        // 初始化视频解码器
-        if (!initializeVideoDecoder(filePath)) {
+        std::lock_guard<std::mutex> lock(mVideoDecoderMutex);
+
+        if (!mVideoDecoder) {
+            mVideoDecoder = std::make_unique<VideoDecoder>();
+        }
+
+        if (!mVideoDecoder->initialize(filePath)) {
             ALOGE("Failed to initialize video decoder for: %s", filePath.c_str());
             return false;
         }
-        
+
         // 提取视频帧
-        if (!extractVideoFrames(filePath, mVideoFrames)) {
-            ALOGE("Failed to extract video frames from: %s", filePath.c_str());
-            cleanupVideoDecoder();
-            return false;
+        std::lock_guard<std::mutex> framesLock(mVideoFramesMutex);
+        mVideoFrames.clear();
+
+        int frameCount = mVideoDecoder->getFrameCount();
+        int width = mVideoDecoder->getWidth();
+        int height = mVideoDecoder->getHeight();
+
+        ALOGI("Video info: %dx%d, %d frames", width, height, frameCount);
+
+        for (int i = 0; i < std::min(frameCount, MAX_VIDEO_FRAMES); i++) {
+            std::vector<uint8_t> yuvData;
+            int frameWidth, frameHeight;
+
+            if (mVideoDecoder->decodeFrame(i, yuvData, frameWidth, frameHeight)) {
+                mVideoFrames.push_back(std::move(yuvData));
+            }
         }
-        
-        ALOGI("Successfully loaded video file: %s, extracted %zu frames", 
-              filePath.c_str(), mVideoFrames.size());
-        return true;
+
+        mCurrentVideoFrameIndex = 0;
+        mVideoDecoderInitialized = true;
+
+        ALOGI("Loaded %zu video frames", mVideoFrames.size());
+        return !mVideoFrames.empty();
     }
 
     bool ImageInjector::decodeVideoFrame(const std::string& filePath, int frameIndex,
                                          std::vector<uint8_t>& yuvData, int& width, int& height) {
-        std::lock_guard<std::mutex> lock(mVideoFramesMutex);
-        
-        if (frameIndex < 0 || frameIndex >= (int)mVideoFrames.size()) {
-            ALOGW("Invalid frame index: %d, total frames: %zu", frameIndex, mVideoFrames.size());
+        std::lock_guard<std::mutex> lock(mVideoDecoderMutex);
+
+        if (!mVideoDecoder || !mVideoDecoderInitialized) {
             return false;
         }
-        
-        // 获取指定帧的YUV数据
-        yuvData = mVideoFrames[frameIndex];
-        
-        // 从视频格式中获取尺寸信息
-        if (mVideoFormat) {
-            int32_t videoWidth, videoHeight;
-            if (AMediaFormat_getInt32(mVideoFormat, AMEDIAFORMAT_KEY_WIDTH, &videoWidth) &&
-                AMediaFormat_getInt32(mVideoFormat, AMEDIAFORMAT_KEY_HEIGHT, &videoHeight)) {
-                width = videoWidth;
-                height = videoHeight;
-            } else {
-                ALOGW("Failed to get video dimensions from format");
-                return false;
-            }
-        } else {
-            ALOGW("Video format not available");
-            return false;
-        }
-        
-        ALOGV("Decoded video frame %d: %dx%d, data size: %zu", 
-              frameIndex, width, height, yuvData.size());
-        return true;
+
+        return mVideoDecoder->decodeFrame(frameIndex, yuvData, width, height);
     }
 
     bool ImageInjector::initializeVideoDecoder(const std::string& filePath) {
         std::lock_guard<std::mutex> lock(mVideoDecoderMutex);
-        
+
         // 创建媒体提取器
-        mMediaExtractor = (void*)AMediaExtractor_new();
+        mMediaExtractor = AMediaExtractor_new();
         if (!mMediaExtractor) {
             ALOGE("Failed to create media extractor");
             return false;
         }
-        
+
         // 设置数据源
         media_status_t status = AMediaExtractor_setDataSource(mMediaExtractor, filePath.c_str());
         if (status != AMEDIA_OK) {
@@ -1034,15 +1026,15 @@ namespace android {
             mMediaExtractor = nullptr;
             return false;
         }
-        
+
         // 查找视频轨道
         size_t trackCount = AMediaExtractor_getTrackCount(mMediaExtractor);
         int videoTrackIndex = -1;
-        
+
         for (size_t i = 0; i < trackCount; i++) {
             AMediaFormat* format = AMediaExtractor_getTrackFormat(mMediaExtractor, i);
             if (!format) continue;
-            
+
             const char* mime;
             if (AMediaFormat_getString(format, AMEDIAFORMAT_KEY_MIME, &mime)) {
                 if (strncmp(mime, "video/", 6) == 0) {
@@ -1054,14 +1046,14 @@ namespace android {
             }
             AMediaFormat_delete(format);
         }
-        
+
         if (videoTrackIndex == -1) {
             ALOGE("No video track found in file: %s", filePath.c_str());
             AMediaExtractor_delete(mMediaExtractor);
             mMediaExtractor = nullptr;
             return false;
         }
-        
+
         // 选择视频轨道
         status = AMediaExtractor_selectTrack(mMediaExtractor, videoTrackIndex);
         if (status != AMEDIA_OK) {
@@ -1072,11 +1064,11 @@ namespace android {
             mVideoFormat = nullptr;
             return false;
         }
-        
+
         // 创建视频解码器
         const char* mime;
         AMediaFormat_getString(mVideoFormat, AMEDIAFORMAT_KEY_MIME, &mime);
-        
+
         mVideoDecoder = AMediaCodec_createDecoderByType(mime);
         if (!mVideoDecoder) {
             ALOGE("Failed to create video decoder for: %s", mime);
@@ -1086,7 +1078,7 @@ namespace android {
             mVideoFormat = nullptr;
             return false;
         }
-        
+
         // 配置解码器
         status = AMediaCodec_configure(mVideoDecoder, mVideoFormat, nullptr, nullptr, 0);
         if (status != AMEDIA_OK) {
@@ -1099,7 +1091,7 @@ namespace android {
             mVideoFormat = nullptr;
             return false;
         }
-        
+
         // 启动解码器
         status = AMediaCodec_start(mVideoDecoder);
         if (status != AMEDIA_OK) {
@@ -1112,7 +1104,7 @@ namespace android {
             mVideoFormat = nullptr;
             return false;
         }
-        
+
         mVideoDecoderInitialized = true;
         ALOGI("Video decoder initialized successfully");
         return true;
@@ -1120,106 +1112,106 @@ namespace android {
 
     void ImageInjector::cleanupVideoDecoder() {
         std::lock_guard<std::mutex> lock(mVideoDecoderMutex);
-        
+
         if (mVideoDecoder) {
             AMediaCodec_stop(mVideoDecoder);
             AMediaCodec_delete(mVideoDecoder);
             mVideoDecoder = nullptr;
         }
-        
+
         if (mMediaExtractor) {
             AMediaExtractor_delete(mMediaExtractor);
             mMediaExtractor = nullptr;
         }
-        
+
         if (mVideoFormat) {
             AMediaFormat_delete(mVideoFormat);
             mVideoFormat = nullptr;
         }
-        
+
         mVideoDecoderInitialized = false;
-        
+
         // 清理视频帧缓存
         {
             std::lock_guard<std::mutex> framesLock(mVideoFramesMutex);
             mVideoFrames.clear();
             mCurrentVideoFrameIndex = 0;
         }
-        
+
         ALOGI("Video decoder cleaned up");
     }
 
-    bool ImageInjector::extractVideoFrames(const std::string& filePath, 
+    bool ImageInjector::extractVideoFrames(const std::string& filePath,
                                            std::vector<std::vector<uint8_t>>& frames) {
         if (!mVideoDecoderInitialized) {
             ALOGE("Video decoder not initialized");
             return false;
         }
-        
+
         frames.clear();
         frames.reserve(MAX_VIDEO_FRAMES);
-        
+
         int32_t width, height;
         if (!AMediaFormat_getInt32(mVideoFormat, AMEDIAFORMAT_KEY_WIDTH, &width) ||
             !AMediaFormat_getInt32(mVideoFormat, AMEDIAFORMAT_KEY_HEIGHT, &height)) {
             ALOGE("Failed to get video dimensions");
             return false;
         }
-        
+
         ALOGI("Extracting video frames: %dx%d", width, height);
-        
+
         bool inputEOS = false;
         bool outputEOS = false;
         int frameCount = 0;
-        
+
         while (!outputEOS && frameCount < MAX_VIDEO_FRAMES) {
             // 输入数据到解码器
             if (!inputEOS) {
                 ssize_t inputBufferIndex = AMediaCodec_dequeueInputBuffer(mVideoDecoder, 1000);
                 if (inputBufferIndex >= 0) {
                     size_t inputBufferSize;
-                    uint8_t* inputBuffer = AMediaCodec_getInputBuffer(mVideoDecoder, 
+                    uint8_t* inputBuffer = AMediaCodec_getInputBuffer(mVideoDecoder,
                                                                       inputBufferIndex, &inputBufferSize);
                     if (inputBuffer) {
-                        ssize_t sampleSize = AMediaExtractor_readSampleData(mMediaExtractor, 
+                        ssize_t sampleSize = AMediaExtractor_readSampleData(mMediaExtractor,
                                                                             inputBuffer, inputBufferSize);
                         if (sampleSize < 0) {
                             sampleSize = 0;
                             inputEOS = true;
                         }
-                        
+
                         int64_t presentationTimeUs = AMediaExtractor_getSampleTime(mMediaExtractor);
-                        AMediaCodec_queueInputBuffer(mVideoDecoder, inputBufferIndex, 0, 
-                                                    sampleSize, presentationTimeUs, 
-                                                    inputEOS ? AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM : 0);
-                        
+                        AMediaCodec_queueInputBuffer(mVideoDecoder, inputBufferIndex, 0,
+                                                     sampleSize, presentationTimeUs,
+                                                     inputEOS ? AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM : 0);
+
                         if (!inputEOS) {
                             AMediaExtractor_advance(mMediaExtractor);
                         }
                     }
                 }
             }
-            
+
             // 从解码器获取输出数据
             AMediaCodecBufferInfo info;
             ssize_t outputBufferIndex = AMediaCodec_dequeueOutputBuffer(mVideoDecoder, &info, 1000);
-            
+
             if (outputBufferIndex >= 0) {
                 size_t outputBufferSize;
-                uint8_t* outputBuffer = AMediaCodec_getOutputBuffer(mVideoDecoder, 
+                uint8_t* outputBuffer = AMediaCodec_getOutputBuffer(mVideoDecoder,
                                                                     outputBufferIndex, &outputBufferSize);
                 if (outputBuffer && info.size > 0) {
                     // 将YUV数据复制到帧缓存
-                    std::vector<uint8_t> frameData(outputBuffer + info.offset, 
+                    std::vector<uint8_t> frameData(outputBuffer + info.offset,
                                                    outputBuffer + info.offset + info.size);
                     frames.push_back(std::move(frameData));
                     frameCount++;
-                    
+
                     ALOGV("Extracted frame %d, size: %d", frameCount, (int)info.size);
                 }
-                
+
                 AMediaCodec_releaseOutputBuffer(mVideoDecoder, outputBufferIndex, false);
-                
+
                 if (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM) {
                     outputEOS = true;
                 }
@@ -1229,7 +1221,7 @@ namespace android {
                 AMediaFormat_delete(newFormat);
             }
         }
-        
+
         ALOGI("Extracted %d video frames", frameCount);
         return frameCount > 0;
     }
