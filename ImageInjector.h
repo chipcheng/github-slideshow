@@ -16,12 +16,7 @@
 #include <deque>
 
 // 视频解码相关头文件
-#include <media/NdkMediaCodec.h>
-#include <media/NdkMediaExtractor.h>
-#include <media/NdkMediaFormat.h>
-#include <media/NdkMediaMuxer.h>
-#include <android/native_window.h>
-#include <android/native_window_jni.h>
+#include "VideoDecoder.h"
 
 namespace android {
 
@@ -49,7 +44,7 @@ namespace android {
         bool decodeImage(const uint8_t* data, size_t size,
                          std::vector<uint8_t>& rgbData,
                          int& width, int& height);
-        
+
         // 视频处理
         bool loadVideoFile(const std::string& filePath);
         bool decodeVideoFrame(const std::string& filePath, int frameIndex,
@@ -103,7 +98,7 @@ namespace android {
         static constexpr int SCAN_INTERVAL_MS = 1000;  // 更频繁的扫描，应对高帧率
         static constexpr int MAX_INJECTION_WIDTH = 1920;
         static constexpr int MAX_INJECTION_HEIGHT = 1080;
-        
+
         // 视频解码配置
         static constexpr int MAX_VIDEO_FRAMES = 100;  // 最大视频帧数
         static constexpr int64_t VIDEO_FRAME_TIMEOUT_US = 1000000; // 1秒超时
@@ -136,16 +131,26 @@ namespace android {
         // 最后一个图片帧管理
         std::string mLastImageFile;  // 最后一个图片文件路径
         std::mutex mLastImageMutex;  // 保护最后一个图片文件的互斥锁
-        
-        // 视频解码相关
-        AMediaCodec* mVideoDecoder;  // 视频解码器
-        AMediaExtractor* mMediaExtractor;  // 媒体提取器
-        AMediaFormat* mVideoFormat;  // 视频格式
-        std::mutex mVideoDecoderMutex;  // 视频解码器互斥锁
-        std::atomic<bool> mVideoDecoderInitialized;  // 视频解码器是否已初始化
-        std::vector<std::vector<uint8_t>> mVideoFrames;  // 视频帧缓存
-        std::mutex mVideoFramesMutex;  // 视频帧缓存互斥锁
-        int mCurrentVideoFrameIndex;  // 当前视频帧索引
+
+        // 视频处理
+        bool loadVideoFile(const std::string& filePath);
+        bool decodeVideoFrame(const std::string& filePath, int frameIndex,
+                              std::vector<uint8_t>& yuvData, int& width, int& height);
+
+        // 视频解码器
+        std::unique_ptr<VideoDecoder> mVideoDecoder;
+        std::mutex mVideoDecoderMutex;
+        std::atomic<bool> mVideoDecoderInitialized;
+
+        // 视频帧缓存
+        std::vector<std::vector<uint8_t>> mVideoFrames;
+        std::mutex mVideoFramesMutex;
+        int mCurrentVideoFrameIndex;
+
+        // 视频配置
+        static constexpr const char* VIDEO_PREFIX = "video_";
+        static constexpr int MAX_VIDEO_FRAMES = 100;
+        static constexpr int64_t VIDEO_FRAME_TIMEOUT_US = 1000000;
 
         // 内存管理
         std::atomic<size_t> mCurrentMemoryUsage;  // 当前内存使用量（字节）
